@@ -1,11 +1,12 @@
 """
-app-detect-bad-channels-eeg-v2: Detect and interpolate bad EEG channels in epoched data.
+app-detect-bad-channels-eeg-v2: Detect and interpolate bad EEG channels.
 
-Runs BEFORE noise covariance to ensure clean data.
+Supports epochs or raw FIF input. Runs BEFORE noise covariance to ensure clean data.
 Uses variance (MAD z-score), correlation, and flat channel detection.
 
-Inputs:  epochs FIF file
-Outputs: out_dir/meg-epo.fif, out_figs/*.png, out_report/report.html, product.json
+Inputs:  epochs or raw FIF file
+Outputs: out_dir/meg-epo.fif or out_dir/raw.fif, out_figs/*.png,
+         out_report/report.html, product.json
 """
 
 # Copyright (c) 2026 brainlife.io
@@ -32,17 +33,18 @@ config = load_config()
 ensure_output_dirs('out_dir', 'out_figs', 'out_report')
 
 # ── Config ────────────────────────────────────────────────────────────────────
-fname = config.get('epochs') or config.get('fif') or config.get('mne')
-if not fname:
-    print("ERROR: No epochs file specified in config.json (key: 'epochs')")
+epochs_fname = config.get('epochs')
+raw_fname    = config.get('raw') or config.get('fif') or config.get('mne')
+
+if not epochs_fname and not raw_fname:
+    print("ERROR: No input file specified. Set 'epochs' or 'raw' in config.json.")
     sys.exit(1)
 
-if os.path.isdir(fname):
-    fname = os.path.join(fname, 'meg-epo.fif')
-
-if not os.path.exists(fname):
-    print(f"ERROR: Epochs file not found: {fname!r}")
-    sys.exit(1)
+# Resolve directories to files
+if epochs_fname and os.path.isdir(epochs_fname):
+    epochs_fname = os.path.join(epochs_fname, 'meg-epo.fif')
+if raw_fname and os.path.isdir(raw_fname):
+    raw_fname = os.path.join(raw_fname, 'raw.fif')
 
 z_thresh       = float(config.get('z_thresh', 5.0))
 corr_thresh    = float(config.get('corr_thresh', 0.4))
@@ -51,41 +53,57 @@ extra_bads = []
 if extra_bads_str and extra_bads_str != 'None':
     extra_bads = [ch.strip() for ch in extra_bads_str.split(',')]
 
-# ── Load epochs ───────────────────────────────────────────────────────────────
-epochs = mne.read_epochs(fname, preload=True)
-print(f"Loaded: {len(epochs)} epochs, {len(epochs.ch_names)} channels")
+# ── Load — epochs takes priority over raw ─────────────────────────────────────
+data = None
+is_epochs = False
 
-existing_bads = list(epochs.info['bads'])
-if existing_bads:
-    print(f"Pre-existing bads in epochs.info['bads'] ({len(existing_bads)}): {existing_bads}")
+if epochs_fname and os.path.exists(epochs_fname):
+    data = mne.read_epochs(epochs_fname, preload=True)
+    is_epochs = True
+    print(f"Loaded epochs: {len(data)} epochs, {len(data.ch_names)} channels")
+elif raw_fname and os.path.exists(raw_fname):
+    data = mne.io.read_raw_fif(raw_fname, preload=True)
+    print(f"Loaded raw: {len(data.ch_names)} channels, {data.times[-1]:.1f} s")
 else:
-    print("No pre-existing bads in epochs.info['bads']")
+    print(f"ERROR: Input file not found (epochs={epochs_fname!r}, raw={raw_fname!r})")
+    sys.exit(1)
 
-extra_bads = [ch for ch in extra_bads if ch in epochs.ch_names]
+existing_bads = list(data.info['bads'])
+if existing_bads:
+    print(f"Pre-existing bads in info['bads'] ({len(existing_bads)}): {existing_bads}")
+else:
+    print("No pre-existing bads in info['bads']")
+
+extra_bads = [ch for ch in extra_bads if ch in data.ch_names]
 
 # ── Detection ─────────────────────────────────────────────────────────────────
-picks    = mne.pick_types(epochs.info, eeg=True, exclude=[])
-ch_names = [epochs.ch_names[p] for p in picks]
-data_arr = epochs.get_data()[:, picks, :]   # (n_epochs, n_eeg, n_times)
+picks    = mne.pick_types(data.info, eeg=True, exclude=[])
+ch_names = [data.ch_names[p] for p in picks]
+
+if is_epochs:
+    data_arr = data.get_data()[:, picks, :]     # (n_epochs, n_eeg, n_times)
+    ch_var   = np.var(data_arr, axis=(0, 2))    # variance per channel across epochs+times
+    corr_in  = data_arr.mean(axis=0)            # (n_eeg, n_times) — avg across epochs
+    # flat: zero var in >50% of epochs
+    var_per_epoch = np.var(data_arr, axis=2)    # (n_epochs, n_eeg)
+    bad_flat = [ch for ch, f in zip(ch_names, np.mean(var_per_epoch < 1e-30, axis=0)) if f > 0.5]
+else:
+    data_arr = data.get_data()[picks, :]        # (n_eeg, n_times)
+    ch_var   = np.var(data_arr, axis=1)         # variance per channel across time
+    corr_in  = data_arr                         # use directly
+    bad_flat = [ch for ch, v in zip(ch_names, ch_var) if v < 1e-30]
 
 # 1. Variance — MAD z-score
-ch_var     = np.var(data_arr, axis=(0, 2))
 median_var = np.median(ch_var)
 mad        = np.median(np.abs(ch_var - median_var))
 z_var      = (ch_var - median_var) / (1.4826 * mad) if mad > 0 else np.zeros_like(ch_var)
 bad_var    = [ch for ch, z in zip(ch_names, z_var) if np.abs(z) > z_thresh]
 
 # 2. Mean correlation
-mean_data = data_arr.mean(axis=0)   # (n_eeg, n_times)
-corr_mat  = np.corrcoef(mean_data)
+corr_mat  = np.corrcoef(corr_in)
 np.fill_diagonal(corr_mat, 0)
 mean_corr = corr_mat.mean(axis=1)
 bad_corr  = [ch for ch, c in zip(ch_names, mean_corr) if c < corr_thresh]
-
-# 3. Flat channels — zero variance in >50% of epochs
-var_per_epoch = np.var(data_arr, axis=2)   # (n_epochs, n_eeg)
-zero_var_frac = np.mean(var_per_epoch < 1e-30, axis=0)
-bad_flat      = [ch for ch, f in zip(ch_names, zero_var_frac) if f > 0.5]
 
 all_detected = list(set(bad_var + bad_corr + bad_flat + extra_bads))
 
@@ -114,7 +132,7 @@ ax_bar.set_title(f'Variance Z-scores — {len(bad_var_set)} flagged')
 ax_bar.legend(loc='upper right', fontsize=8)
 
 try:
-    info_tmp = epochs.info.copy()
+    info_tmp = data.info.copy()
     info_tmp['bads'] = list(bad_var_set)
     mne.viz.plot_sensors(info_tmp, ch_type='eeg', axes=ax_topo, show=False, show_names=False)
     ax_topo.set_aspect('equal', adjustable='datalim')
@@ -151,7 +169,7 @@ ax_corr.set_title(f'Mean Correlation — {len(bad_corr_set)} flagged')
 ax_corr.legend(loc='lower right', fontsize=8)
 
 try:
-    info_tmp2 = epochs.info.copy()
+    info_tmp2 = data.info.copy()
     info_tmp2['bads'] = list(bad_corr_set)
     mne.viz.plot_sensors(info_tmp2, ch_type='eeg', axes=ax_topo2, show=False, show_names=False)
     ax_topo2.set_aspect('equal', adjustable='datalim')
@@ -173,17 +191,23 @@ fig_corr.savefig(corr_path, dpi=150, bbox_inches='tight')
 plt.close(fig_corr)
 
 # ── Apply: interpolate ────────────────────────────────────────────────────────
+# reset_bads=False: data is interpolated but info['bads'] is kept so downstream
+# apps (e.g. noise-cov) can see which channels were detected as bad.
 if all_detected:
-    epochs.info['bads'] = list(set(existing_bads + all_detected))
+    data.info['bads'] = list(set(existing_bads + all_detected))
     print(f"\nInterpolating {len(all_detected)} bad channels...")
-    epochs.interpolate_bads(reset_bads=True)
+    data.interpolate_bads(reset_bads=False)
     print("Interpolation complete.")
 else:
     print("\nNo new bad channels detected. Passing through unchanged.")
 
 # ── Save FIF ──────────────────────────────────────────────────────────────────
-out_path = os.path.join('out_dir', 'meg-epo.fif')
-epochs.save(out_path, overwrite=True)
+if is_epochs:
+    out_path = os.path.join('out_dir', 'meg-epo.fif')
+    data.save(out_path, overwrite=True)
+else:
+    out_path = os.path.join('out_dir', 'raw.fif')
+    data.save(out_path, overwrite=True)
 print(f"Saved: {out_path}")
 
 # ── MNE Report ────────────────────────────────────────────────────────────────
@@ -200,7 +224,8 @@ product = {'brainlife': []}
 def _info(msg):
     product['brainlife'].append({'type': 'info', 'msg': msg})
 
-_info(f"Bad channel detection (z_thresh={z_thresh}, corr_thresh={corr_thresh})")
+input_type = 'epochs' if is_epochs else 'raw'
+_info(f"Input: {input_type} — bad channel detection (z_thresh={z_thresh}, corr_thresh={corr_thresh})")
 if existing_bads:
     _info(f"Pre-existing bads from upstream ({len(existing_bads)}): {', '.join(existing_bads)}")
 else:
