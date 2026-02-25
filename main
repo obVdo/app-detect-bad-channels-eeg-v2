@@ -1,0 +1,18 @@
+#!/bin/bash
+#PBS -l nodes=1:ppn=1,walltime=00:30:00
+#PBS -N app-detect-bad-channels
+
+set -e
+set -x
+
+# Try to use a cached local image, fall back to pulling from Docker Hub
+SIF=/tmp/brainlife_mne_1.0.2.sif
+if [ ! -f "$SIF" ]; then
+    singularity pull "$SIF" docker://brainlife/mne:1.0.2 || true
+fi
+
+if [ -f "$SIF" ]; then
+    singularity exec "$SIF" python3 main.py
+else
+    singularity exec docker://brainlife/mne:1.0.2 python3 main.py
+fi
