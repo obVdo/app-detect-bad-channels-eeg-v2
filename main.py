@@ -33,7 +33,8 @@ config = load_config()
 ensure_output_dirs('out_dir', 'out_figs', 'out_report')
 
 # ── Config ────────────────────────────────────────────────────────────────────
-fname = config.get('epochs') or config.get('fif') or config.get('mne')
+fname = config.get('epo') or config.get('epochs') or config.get('fif') or config.get('mne')
+
 if not fname:
     print("ERROR: No epochs file specified in config.json (key: 'epochs')")
     sys.exit(1)
