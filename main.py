@@ -77,12 +77,17 @@ mad        = np.median(np.abs(ch_var - median_var))
 z_var      = (ch_var - median_var) / (1.4826 * mad) if mad > 0 else np.zeros_like(ch_var)
 bad_var    = [ch for ch, z in zip(ch_names, z_var) if np.abs(z) > z_thresh]
 
-# 2. Mean correlation
-mean_data = data_arr.mean(axis=0)   # (n_eeg, n_times)
-corr_mat  = np.corrcoef(mean_data)
+# 2. Mean correlation — use temporary average reference copy for correlation
+# Without avg ref (e.g. BioSemi CMS/DRL), pairwise correlations are artificially
+# low across all channels, causing everything to be flagged.
+epochs_ref = epochs.copy().set_eeg_reference('average', projection=False, verbose=False)
+data_ref   = epochs_ref.get_data()[:, picks, :]   # (n_epochs, n_eeg, n_times)
+mean_data  = data_ref.mean(axis=0)                 # (n_eeg, n_times)
+corr_mat   = np.corrcoef(mean_data)
 np.fill_diagonal(corr_mat, 0)
-mean_corr = corr_mat.mean(axis=1)
-bad_corr  = [ch for ch, c in zip(ch_names, mean_corr) if c < corr_thresh]
+mean_corr  = corr_mat.mean(axis=1)
+bad_corr   = [ch for ch, c in zip(ch_names, mean_corr) if c < corr_thresh]
+del epochs_ref, data_ref
 
 # 3. Flat channels — zero variance in >50% of epochs
 var_per_epoch = np.var(data_arr, axis=2)   # (n_epochs, n_eeg)
