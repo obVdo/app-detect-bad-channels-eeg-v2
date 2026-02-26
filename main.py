@@ -1,7 +1,8 @@
 """
-app-detect-bad-channels-eeg-v2: Detect and interpolate bad EEG channels in epoched data.
+app-detect-bad-channels-eeg-v2: Detect bad EEG channels in epoched data.
 
-Runs BEFORE ICA to ensure clean input for decomposition.
+Marks detected channels in info['bads'] and saves epochs unchanged.
+Runs BEFORE ICA so bad channels are known before decomposition.
 Uses variance (MAD z-score), correlation, and flat channel detection.
 
 Inputs:  epochs FIF file
@@ -172,16 +173,13 @@ corr_path = os.path.join('out_figs', 'mean_correlation.png')
 fig_corr.savefig(corr_path, dpi=150, bbox_inches='tight')
 plt.close(fig_corr)
 
-# ── Apply: interpolate ────────────────────────────────────────────────────────
-# reset_bads=False: data is interpolated but info['bads'] is kept so downstream
-# apps (e.g. noise-cov) can see which channels were detected as bad.
+# ── Mark bads in info — no interpolation ─────────────────────────────────────
+# Downstream apps read info['bads'] to know which channels to skip or interpolate.
+epochs.info['bads'] = list(set(existing_bads + all_detected))
 if all_detected:
-    epochs.info['bads'] = list(set(existing_bads + all_detected))
-    print(f"\nInterpolating {len(all_detected)} bad channels...")
-    epochs.interpolate_bads(reset_bads=False)
-    print("Interpolation complete.")
+    print(f"\nMarked {len(all_detected)} channels as bad in info['bads']")
 else:
-    print("\nNo new bad channels detected. Passing through unchanged.")
+    print("\nNo new bad channels detected.")
 
 # ── Save FIF ──────────────────────────────────────────────────────────────────
 out_path = os.path.join('out_dir', 'meg-epo.fif')
@@ -212,7 +210,7 @@ _info(f"Low correlation  ({len(bad_corr)}): {', '.join(bad_corr) or 'none'}")
 _info(f"Flat             ({len(bad_flat)}): {', '.join(bad_flat) or 'none'}")
 if extra_bads:
     _info(f"User-specified bads: {', '.join(extra_bads)}")
-_info(f"Total interpolated: {len(all_detected)}")
+_info(f"Total marked as bad: {len(all_detected)}")
 
 for img_name, img_path in [
     ('Variance Z-scores', var_path),
