@@ -46,8 +46,7 @@ if not os.path.exists(fname):
     print(f"ERROR: Epochs file not found: {fname!r}")
     sys.exit(1)
 
-z_thresh         = float(config.get('z_thresh', 5.0))
-var_median_thresh = float(config.get('var_median_thresh', 5.0))
+z_thresh       = float(config.get('z_thresh', 5.0))
 extra_bads_str = config.get('extra_bads', '') or ''
 extra_bads = []
 if extra_bads_str and extra_bads_str != 'None':
@@ -77,25 +76,21 @@ mad        = np.median(np.abs(ch_var - median_var))
 z_var      = (ch_var - median_var) / (1.4826 * mad) if mad > 0 else np.zeros_like(ch_var)
 bad_var    = [ch for ch, z in zip(ch_names, z_var) if np.abs(z) > z_thresh]
 
-# 2. Variance — N× median threshold
-bad_var_median = [ch for ch, v in zip(ch_names, ch_var) if v > var_median_thresh * median_var]
-
-# 3. Flat channels — zero variance in >50% of epochs
+# 2. Flat channels — zero variance in >50% of epochs
 var_per_epoch = np.var(data_arr, axis=2)   # (n_epochs, n_eeg)
 zero_var_frac = np.mean(var_per_epoch < 1e-30, axis=0)
 bad_flat      = [ch for ch, f in zip(ch_names, zero_var_frac) if f > 0.5]
 
-all_detected = list(set(bad_var + bad_var_median + bad_flat + extra_bads))
+all_detected = list(set(bad_var + bad_flat + extra_bads))
 
 print(f"\nDetected bad channels:")
-print(f"  MAD z-score      ({len(bad_var)}): {bad_var}")
-print(f"  N×median         ({len(bad_var_median)}): {bad_var_median}")
-print(f"  Flat             ({len(bad_flat)}): {bad_flat}")
+print(f"  MAD z-score ({len(bad_var)}): {bad_var}")
+print(f"  Flat        ({len(bad_flat)}): {bad_flat}")
 if extra_bads:
-    print(f"  User-specified   ({len(extra_bads)}): {extra_bads}")
+    print(f"  User-specified ({len(extra_bads)}): {extra_bads}")
 print(f"  Total newly detected: {len(all_detected)}")
 
-# ── Plot: Variance z-scores + topomap ─────────────────────────────────────────
+# ── Plot 1: Variance z-scores + topomap ───────────────────────────────────────
 bad_set = set(bad_var + bad_flat)
 fig_var, (ax_bar, ax_topo) = plt.subplots(
     1, 2, figsize=(16, 5), gridspec_kw={'width_ratios': [4, 1]}
@@ -133,43 +128,39 @@ var_path = os.path.join('out_figs', 'variance_zscores.png')
 fig_var.savefig(var_path, dpi=150, bbox_inches='tight')
 plt.close(fig_var)
 
-# ── Plot 2: Raw variance + N×median threshold + topomap ───────────────────────
-bad_median_set = set(bad_var_median)
-fig_med, (ax_med, ax_topo_med) = plt.subplots(
-    1, 2, figsize=(16, 5), gridspec_kw={'width_ratios': [4, 1]}
-)
+# ── Plot 2: Time traces of detected bad channels ───────────────────────────────
+traces_path = None
+if all_detected:
+    times = epochs.times
+    mean_epoch = data_arr.mean(axis=0)   # (n_eeg, n_times) — mean across epochs
+    bad_indices = [ch_names.index(ch) for ch in all_detected if ch in ch_names]
 
-colors_med = ['red' if ch in bad_median_set else 'steelblue' for ch in ch_names]
-ax_med.bar(range(len(ch_names)), ch_var * 1e12, color=colors_med, alpha=0.8, width=1.0)
-ax_med.axhline(var_median_thresh * median_var * 1e12, color='red', linestyle='--',
-               linewidth=1.2, label=f'{var_median_thresh}× median')
-ax_med.set_yscale('log')
-ax_med.set_xlabel('Channel index')
-ax_med.set_ylabel('Variance (μV², log scale)')
-ax_med.set_title(f'Raw Variance — {len(bad_median_set)} flagged')
-ax_med.legend(loc='upper right', fontsize=8)
+    n_bad = len(bad_indices)
+    ncols = min(4, n_bad)
+    nrows = int(np.ceil(n_bad / ncols))
+    fig_tr, axes_tr = plt.subplots(nrows, ncols, figsize=(4 * ncols, 2.5 * nrows),
+                                   squeeze=False)
 
-try:
-    info_tmp_med = epochs.info.copy()
-    info_tmp_med['bads'] = list(bad_median_set)
-    mne.viz.plot_sensors(info_tmp_med, ch_type='eeg', axes=ax_topo_med, show=False, show_names=False)
-    ax_topo_med.set_aspect('equal', adjustable='datalim')
-    ax_topo_med.set_title(f'EEG sensors\n({len(bad_median_set)} bad)', fontsize=9)
-    ax_topo_med.legend(handles=[
-        Patch(facecolor='steelblue', label='Good'),
-        Patch(facecolor='red', label=f'Bad ({len(bad_median_set)})'),
-    ], loc='lower center', fontsize=7, framealpha=0.8)
-except Exception as e:
-    ax_topo_med.axis('off')
-    ax_topo_med.text(0.5, 0.5, f'No topomap\n{e}', ha='center', va='center',
-                     transform=ax_topo_med.transAxes, fontsize=7)
-    print(f"Could not draw median topomap: {e}")
+    for i, idx in enumerate(bad_indices):
+        row, col = divmod(i, ncols)
+        ax = axes_tr[row][col]
+        ax.plot(times, mean_epoch[idx] * 1e6, color='red', linewidth=0.8)
+        ax.set_title(ch_names[idx], fontsize=8)
+        ax.set_xlabel('Time (s)', fontsize=7)
+        ax.set_ylabel('μV', fontsize=7)
+        ax.tick_params(labelsize=6)
+        ax.axvline(0, color='k', linewidth=0.5, linestyle='--')
 
-fig_med.suptitle(f'Bad Channel Detection — N×Median Variance ({var_median_thresh}×)', fontsize=13)
-fig_med.tight_layout()
-med_path = os.path.join('out_figs', 'variance_median.png')
-fig_med.savefig(med_path, dpi=150, bbox_inches='tight')
-plt.close(fig_med)
+    # hide unused subplots
+    for i in range(n_bad, nrows * ncols):
+        row, col = divmod(i, ncols)
+        axes_tr[row][col].axis('off')
+
+    fig_tr.suptitle(f'Mean Epoch Traces — {n_bad} Detected Bad Channels', fontsize=12)
+    fig_tr.tight_layout()
+    traces_path = os.path.join('out_figs', 'bad_channel_traces.png')
+    fig_tr.savefig(traces_path, dpi=150, bbox_inches='tight')
+    plt.close(fig_tr)
 
 # ── Mark bads in info — no interpolation ─────────────────────────────────────
 epochs.info['bads'] = list(set(existing_bads + all_detected))
@@ -187,8 +178,8 @@ print(f"Saved: {out_path}")
 report = mne.Report(title='Bad Channel Detection Report')
 if os.path.exists(var_path):
     report.add_image(var_path, title='Variance Z-scores (MAD)')
-if os.path.exists(med_path):
-    report.add_image(med_path, title=f'Variance N×Median ({var_median_thresh}×)')
+if traces_path and os.path.exists(traces_path):
+    report.add_image(traces_path, title='Bad Channel Traces')
 report.save(os.path.join('out_report', 'report.html'), overwrite=True)
 
 # ── product.json ──────────────────────────────────────────────────────────────
@@ -197,23 +188,22 @@ product = {'brainlife': []}
 def _info(msg):
     product['brainlife'].append({'type': 'info', 'msg': msg})
 
-_info(f"Bad channel detection (z_thresh={z_thresh}, var_median_thresh={var_median_thresh})")
+_info(f"Bad channel detection (z_thresh={z_thresh})")
 if existing_bads:
     _info(f"Pre-existing bads from upstream ({len(existing_bads)}): {', '.join(existing_bads)}")
 else:
     _info("Pre-existing bads from upstream: none")
-_info(f"MAD z-score      ({len(bad_var)}): {', '.join(bad_var) or 'none'}")
-_info(f"N×median         ({len(bad_var_median)}): {', '.join(bad_var_median) or 'none'}")
-_info(f"Flat             ({len(bad_flat)}): {', '.join(bad_flat) or 'none'}")
+_info(f"MAD z-score ({len(bad_var)}): {', '.join(bad_var) or 'none'}")
+_info(f"Flat        ({len(bad_flat)}): {', '.join(bad_flat) or 'none'}")
 if extra_bads:
     _info(f"User-specified bads: {', '.join(extra_bads)}")
 _info(f"Total marked as bad: {len(all_detected)}")
 
 for img_name, img_path in [
-    ('Variance Z-scores (MAD)', var_path),
-    (f'Variance N×Median ({var_median_thresh}×)', med_path),
+    ('Variance Z-scores', var_path),
+    ('Bad Channel Traces', traces_path),
 ]:
-    if os.path.exists(img_path):
+    if img_path and os.path.exists(img_path):
         data_uri = base64.b64encode(open(img_path, 'rb').read()).decode('utf-8')
         product['brainlife'].append({'type': 'image/png', 'name': img_name, 'base64': data_uri})
 
