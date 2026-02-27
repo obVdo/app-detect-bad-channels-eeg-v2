@@ -69,15 +69,20 @@ picks    = mne.pick_types(epochs.info, eeg=True, exclude=[])
 ch_names = [epochs.ch_names[p] for p in picks]
 data_arr = epochs.get_data()[:, picks, :]   # (n_epochs, n_eeg, n_times)
 
-# 1. Variance — MAD z-score
-ch_var     = np.var(data_arr, axis=(0, 2))
+# Use baseline only (tmin to 0s) for variance — avoids flagging channels with
+# strong evoked responses as bad (e.g. occipital channels in visual tasks).
+baseline_mask = epochs.times <= 0
+data_baseline = data_arr[:, :, baseline_mask]   # (n_epochs, n_eeg, n_baseline_times)
+
+# 1. Variance — MAD z-score on baseline
+ch_var     = np.var(data_baseline, axis=(0, 2))
 median_var = np.median(ch_var)
 mad        = np.median(np.abs(ch_var - median_var))
 z_var      = (ch_var - median_var) / (1.4826 * mad) if mad > 0 else np.zeros_like(ch_var)
 bad_var    = [ch for ch, z in zip(ch_names, z_var) if np.abs(z) > z_thresh]
 
-# 2. Flat channels — zero variance in >50% of epochs
-var_per_epoch = np.var(data_arr, axis=2)   # (n_epochs, n_eeg)
+# 2. Flat channels — zero variance in >50% of epochs (baseline only)
+var_per_epoch = np.var(data_baseline, axis=2)   # (n_epochs, n_eeg)
 zero_var_frac = np.mean(var_per_epoch < 1e-30, axis=0)
 bad_flat      = [ch for ch, f in zip(ch_names, zero_var_frac) if f > 0.5]
 
