@@ -46,7 +46,7 @@ if not os.path.exists(fname):
     print(f"ERROR: Epochs file not found: {fname!r}")
     sys.exit(1)
 
-z_thresh       = float(config.get('z_thresh', 5.0))
+var_thresh     = float(config.get('var_thresh', 5.0))   # noisy: var > N × median
 extra_bads_str = config.get('extra_bads', '') or ''
 extra_bads = []
 if extra_bads_str and extra_bads_str != 'None':
@@ -79,7 +79,7 @@ ch_var     = np.var(data_baseline, axis=(0, 2))
 median_var = np.median(ch_var)
 mad        = np.median(np.abs(ch_var - median_var))
 z_var      = (ch_var - median_var) / (1.4826 * mad) if mad > 0 else np.zeros_like(ch_var)
-bad_var    = [ch for ch, z in zip(ch_names, z_var) if np.abs(z) > z_thresh]
+bad_var    = [ch for ch, z in zip(ch_names, z_var) if np.abs(z) > var_thresh]
 
 # 2. Flat channels — zero variance in >50% of epochs (baseline only)
 var_per_epoch = np.var(data_baseline, axis=2)   # (n_epochs, n_eeg)
@@ -103,8 +103,8 @@ fig_var, (ax_bar, ax_topo) = plt.subplots(
 
 colors = ['red' if ch in bad_set else 'steelblue' for ch in ch_names]
 ax_bar.bar(range(len(ch_names)), np.abs(z_var), color=colors, alpha=0.8, width=1.0)
-ax_bar.axhline(z_thresh, color='red', linestyle='--', linewidth=1.2,
-               label=f'Z-threshold ({z_thresh})')
+ax_bar.axhline(var_thresh, color='red', linestyle='--', linewidth=1.2,
+               label=f'Z-threshold ({var_thresh})')
 ax_bar.set_yscale('log')
 ax_bar.set_xlabel('Channel index')
 ax_bar.set_ylabel('|Z-score| (MAD, log scale)')
@@ -193,7 +193,7 @@ product = {'brainlife': []}
 def _info(msg):
     product['brainlife'].append({'type': 'info', 'msg': msg})
 
-_info(f"Bad channel detection (z_thresh={z_thresh})")
+_info(f"Bad channel detection (var_thresh={var_thresh})")
 if existing_bads:
     _info(f"Pre-existing bads from upstream ({len(existing_bads)}): {', '.join(existing_bads)}")
 else:
