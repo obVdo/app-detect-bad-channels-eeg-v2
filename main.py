@@ -81,22 +81,26 @@ mad        = np.median(np.abs(ch_var - median_var))
 z_var      = (ch_var - median_var) / (1.4826 * mad) if mad > 0 else np.zeros_like(ch_var)
 bad_var    = [ch for ch, z in zip(ch_names, z_var) if np.abs(z) > var_thresh]
 
-# 2. Flat channels — zero variance in >50% of epochs (baseline only)
+# 2. Dead channels — var < median/100 (physically: <1% of typical signal)
+bad_dead = [ch for ch, v in zip(ch_names, ch_var) if v < median_var / 100]
+
+# 3. Flat channels — literally zero variance in >50% of epochs (disconnected)
 var_per_epoch = np.var(data_baseline, axis=2)   # (n_epochs, n_eeg)
 zero_var_frac = np.mean(var_per_epoch < 1e-30, axis=0)
 bad_flat      = [ch for ch, f in zip(ch_names, zero_var_frac) if f > 0.5]
 
-all_detected = list(set(bad_var + bad_flat + extra_bads))
+all_detected = list(set(bad_var + bad_dead + bad_flat + extra_bads))
 
 print(f"\nDetected bad channels:")
 print(f"  MAD z-score ({len(bad_var)}): {bad_var}")
+print(f"  Dead <median/100 ({len(bad_dead)}): {bad_dead}")
 print(f"  Flat        ({len(bad_flat)}): {bad_flat}")
 if extra_bads:
     print(f"  User-specified ({len(extra_bads)}): {extra_bads}")
 print(f"  Total newly detected: {len(all_detected)}")
 
 # ── Plot 1: Variance z-scores + topomap ───────────────────────────────────────
-bad_set = set(bad_var + bad_flat)
+bad_set = set(bad_var + bad_dead + bad_flat)
 fig_var, (ax_bar, ax_topo) = plt.subplots(
     1, 2, figsize=(16, 5), gridspec_kw={'width_ratios': [4, 1]}
 )
@@ -198,8 +202,9 @@ if existing_bads:
     _info(f"Pre-existing bads from upstream ({len(existing_bads)}): {', '.join(existing_bads)}")
 else:
     _info("Pre-existing bads from upstream: none")
-_info(f"MAD z-score ({len(bad_var)}): {', '.join(bad_var) or 'none'}")
-_info(f"Flat        ({len(bad_flat)}): {', '.join(bad_flat) or 'none'}")
+_info(f"MAD z-score      ({len(bad_var)}): {', '.join(bad_var) or 'none'}")
+_info(f"Dead <median/100 ({len(bad_dead)}): {', '.join(bad_dead) or 'none'}")
+_info(f"Flat             ({len(bad_flat)}): {', '.join(bad_flat) or 'none'}")
 if extra_bads:
     _info(f"User-specified bads: {', '.join(extra_bads)}")
 _info(f"Total marked as bad: {len(all_detected)}")
