@@ -46,7 +46,7 @@ if not os.path.exists(fname):
     print(f"ERROR: Epochs file not found: {fname!r}")
     sys.exit(1)
 
-var_thresh     = float(config.get('var_thresh', 5.0))   # noisy: var > N × median
+var_thresh     = float(config.get('z_thresh') or config.get('var_thresh') or 5.0)   # noisy: MAD z-score threshold
 extra_bads_str = config.get('extra_bads', '') or ''
 extra_bads = []
 if extra_bads_str and extra_bads_str != 'None':
